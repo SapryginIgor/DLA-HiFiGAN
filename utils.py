@@ -1,133 +1,57 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
+import glob
 import os
-
-import hparams
-
-
-def process_text(train_text_path):
-    with open(train_text_path, "r", encoding="utf-8") as f:
-        txt = []
-        for line in f.readlines():
-            txt.append(line)
-
-        return txt
+import matplotlib
+import torch
+from torch.nn.utils import weight_norm
+matplotlib.use("Agg")
+import matplotlib.pylab as plt
 
 
-def get_param_num(model):
-    num_param = sum(param.numel() for param in model.parameters())
-    return num_param
+def plot_spectrogram(spectrogram):
+    fig, ax = plt.subplots(figsize=(10, 2))
+    im = ax.imshow(spectrogram, aspect="auto", origin="lower",
+                   interpolation='none')
+    plt.colorbar(im, ax=ax)
+
+    fig.canvas.draw()
+    plt.close()
+
+    return fig
 
 
-def get_mask_from_lengths(lengths, max_len=None):
-    if max_len == None:
-        max_len = torch.max(lengths).item()
-
-    ids = torch.arange(0, max_len, out=torch.cuda.LongTensor(max_len))
-    mask = (ids < lengths.unsqueeze(1)).bool()
-
-    return mask
+def init_weights(m, mean=0.0, std=0.01):
+    classname = m.__class__.__name__
+    if classname.find("Conv") != -1:
+        m.weight.data.normal_(mean, std)
 
 
-def get_WaveGlow():
-    waveglow_path = os.path.join("waveglow", "pretrained_model")
-    waveglow_path = os.path.join(waveglow_path, "waveglow_256channels.pt")
-    wave_glow = torch.load(waveglow_path)['model']
-    wave_glow = wave_glow.remove_weightnorm(wave_glow)
-    wave_glow.cuda().eval()
-    for m in wave_glow.modules():
-        if 'Conv' in str(type(m)):
-            setattr(m, 'padding_mode', 'zeros')
-
-    return wave_glow
+def apply_weight_norm(m):
+    classname = m.__class__.__name__
+    if classname.find("Conv") != -1:
+        weight_norm(m)
 
 
-def pad_1D(inputs, PAD=0):
-
-    def pad_data(x, length, PAD):
-        x_padded = np.pad(x, (0, length - x.shape[0]),
-                          mode='constant',
-                          constant_values=PAD)
-        return x_padded
-
-    max_len = max((len(x) for x in inputs))
-    padded = np.stack([pad_data(x, max_len, PAD) for x in inputs])
-
-    return padded
+def get_padding(kernel_size, dilation=1):
+    return int((kernel_size*dilation - dilation)/2)
 
 
-def pad_1D_tensor(inputs, PAD=0):
-
-    def pad_data(x, length, PAD):
-        x_padded = F.pad(x, (0, length - x.shape[0]))
-        return x_padded
-
-    max_len = max((len(x) for x in inputs))
-    padded = torch.stack([pad_data(x, max_len, PAD) for x in inputs])
-
-    return padded
+def load_checkpoint(filepath, device):
+    assert os.path.isfile(filepath)
+    print("Loading '{}'".format(filepath))
+    checkpoint_dict = torch.load(filepath, map_location=device)
+    print("Complete.")
+    return checkpoint_dict
 
 
-def pad_2D(inputs, maxlen=None):
-
-    def pad(x, max_len):
-        PAD = 0
-        if np.shape(x)[0] > max_len:
-            raise ValueError("not max_len")
-
-        s = np.shape(x)[1]
-        x_padded = np.pad(x, (0, max_len - np.shape(x)[0]),
-                          mode='constant',
-                          constant_values=PAD)
-        return x_padded[:, :s]
-
-    if maxlen:
-        output = np.stack([pad(x, maxlen) for x in inputs])
-    else:
-        max_len = max(np.shape(x)[0] for x in inputs)
-        output = np.stack([pad(x, max_len) for x in inputs])
-
-    return output
+def save_checkpoint(filepath, obj):
+    print("Saving checkpoint to {}".format(filepath))
+    torch.save(obj, filepath)
+    print("Complete.")
 
 
-def pad_2D_tensor(inputs, maxlen=None):
-
-    def pad(x, max_len):
-        if x.size(0) > max_len:
-            raise ValueError("not max_len")
-
-        s = x.size(1)
-        x_padded = F.pad(x, (0, 0, 0, max_len-x.size(0)))
-        return x_padded[:, :s]
-
-    if maxlen:
-        output = torch.stack([pad(x, maxlen) for x in inputs])
-    else:
-        max_len = max(x.size(0) for x in inputs)
-        output = torch.stack([pad(x, max_len) for x in inputs])
-
-    return output
-
-
-def pad(input_ele, mel_max_length=None):
-    if mel_max_length:
-        out_list = list()
-        max_len = mel_max_length
-        for i, batch in enumerate(input_ele):
-            one_batch_padded = F.pad(
-                batch, (0, 0, 0, max_len-batch.size(0)), "constant", 0.0)
-            out_list.append(one_batch_padded)
-        out_padded = torch.stack(out_list)
-        return out_padded
-    else:
-        out_list = list()
-        max_len = max([input_ele[i].size(0)for i in range(len(input_ele))])
-
-        for i, batch in enumerate(input_ele):
-            one_batch_padded = F.pad(
-                batch, (0, 0, 0, max_len-batch.size(0)), "constant", 0.0)
-            out_list.append(one_batch_padded)
-        out_padded = torch.stack(out_list)
-        return out_padded
+def scan_checkpoint(cp_dir, prefix):
+    pattern = os.path.join(cp_dir, prefix + '????????')
+    cp_list = glob.glob(pattern)
+    if len(cp_list) == 0:
+        return None
+    return sorted(cp_list)[-1]
